@@ -644,3 +644,77 @@
         except ArgError as e:
             print(e, "\nPlease specify an integer less than the current sampling rate")
 
+    def smooth_csi(input_csi, rx=2, sub=15):
+        """
+        Applies SpotFi smoothing technique.\n
+        :param input_csi:  [packet, sub, rx]
+        :param rx: the number of receive antennas for smoothing (default: 2 proposed in spotfi)
+        :param sub: the number of subcarriers for smoothing (default: 15 proposed in spotfi)
+        :return: smoothed csi
+        """
+        nrx = input_csi.shape[1]
+        nsub = input_csi.shape[0]
+
+        input_csi = input_csi.swapaxes(0, 1)
+
+        output = [input_csi[i:i + rx, j:j + sub].reshape(-1)
+                  for i in range(nrx - rx + 1)
+                  for j in range(nsub - sub + 1)]
+
+        return np.array(output)
+
+    @staticmethod
+    def noise_space(input_csi):
+        """
+        Calculates self-correlation and eigen vectors of given csi.\n
+        For AoA, input CSI of (nsub, nrx).\n
+        For ToF and Doppler, input CSI of (nrx, nsub).\n
+        :param input_csi: complex csi
+        :return: noise space vectors
+        """
+
+        input_csi = np.squeeze(input_csi)
+
+        value, vector = np.linalg.eigh(input_csi.T.dot(np.conjugate(input_csi)))
+        descend_order_index = np.argsort(-value)
+        vector = vector[:, descend_order_index]
+        noise_space = vector[:, 1:]
+
+        return noise_space
+
+    @staticmethod
+    def conjmul_dynamic(input_csi, ref, reference_antenna, subtract_mean=True):
+        if ref == 'rx':
+            hc = input_csi * input_csi[:, :, reference_antenna, :][..., np.newaxis, :].repeat(3, axis=2).conj()
+        elif ref == 'tx':
+            hc = input_csi * input_csi[:, :, :, reference_antenna][..., np.newaxis].repeat(3, axis=3).conj()
+
+        if subtract_mean is True:
+            static = np.mean(hc, axis=0)
+            dynamic = hc - static
+        else:
+            dynamic = hc
+        return dynamic
+
+    @staticmethod
+    def divison_dynamic(input_csi, ref, reference_antenna, subtract_mean=True):
+
+        re_csi = (np.abs(input_csi) + 1.e-6) * np.exp(1.j * np.angle(input_csi))
+        if ref == 'rx':
+            hc = input_csi / re_csi[:, :, reference_antenna, :][..., np.newaxis, :].repeat(3, axis=2)
+        elif ref == 'tx':
+            hc = input_csi / re_csi[:, :, :, reference_antenna][..., np.newaxis].repeat(3, axis=3)
+
+        if subtract_mean is True:
+            static = np.mean(hc, axis=0)
+            dynamic = hc - static
+        else:
+            dynamic = hc
+        return dynamic
+
+    @staticmethod
+    def highpass(fs=1000, cutoff=2, order=5):
+        nyq = 0.5 * fs
+        normal_cutoff = cutoff / nyq
+        b, a = signal.butter(order, normal_cutoff, btype='high', analog=False)
+        return b, a
