@@ -360,3 +360,287 @@
             print(e)
         except ArgError as e:
             print(e, "\nPlease specify smooth=True or False")
+
+
+    def sanitize_phase(self):
+        """
+        Also known as SpotFi Algorithm1.\n
+        Removes Sampling Time Offset shared by all rx antennas.\n
+        :return: sanitized phase
+        """
+
+        nrx = self.configs.nrx
+        nsub = self.configs.nsub
+
+        print(self.name, "apply SpotFi Algorithm1 to remove STO...", end='')
+
+        try:
+            if self.csi is None:
+                raise DataError("phase: " + str(self.csi))
+
+            fit_x = np.concatenate([np.arange(0, nsub) for _ in range(nrx)])
+            fit_y = np.unwrap(np.squeeze(self.csi), axis=1).swapaxes(1, 2).reshape(self.length, -1)
+
+            a = np.stack((fit_x, np.ones_like(fit_x)), axis=-1)
+            fit = np.linalg.inv(a.T.dot(a)).dot(a.T).dot(fit_y.T).T
+            # fit = np.array([np.polyfit(fit_x, fit_y[i], 1) for i in range(self.data.length)])
+
+            phase = np.unwrap(np.angle(self.csi), axis=1) - np.arange(nsub).reshape(
+                (1, nsub, 1, 1)) * fit[:, 0].reshape(self.length, 1, 1, 1)
+            print("Done")
+
+            self.csi = np.abs(self.csi) * np.exp(1.j * phase)
+
+        except DataError as e:
+            print(e, "\nPlease load data")
+
+    def remove_ipo(self, reference_antenna=0, cal_dict=None):
+        """
+        Calibrates phase with reference csi data files.\n
+        Multiple files is supported.\n
+        Reference files are recommended to be collected at 50cm at certain degrees (eg. 0, +-30, +-60).\n
+        Removes Initial Phase Offset.\n
+        :param reference_antenna: select one antenna with which to calculate phase difference between antennas.
+        Default is 0
+        :param cal_dict: formatted as "{'xx': MyCsi}", where xx is degrees
+        :return: calibrated phase
+        """
+        nrx = self.configs.nrx
+        distance_antenna = self.configs.dist_antenna
+        torad = self.configs.torad
+        lightspeed = self.configs.lightspeed
+        center_freq = self.configs.center_freq
+
+        print(self.name, "apply phase calibration according to", str(cal_dict.keys())[10:-1], "...", end='')
+
+        try:
+            if self.csi is None:
+                raise DataError("csi: " + str(self.csi))
+
+            if reference_antenna not in (0, 1, 2):
+                raise ArgError("reference_antenna: " + str(reference_antenna))
+
+            if cal_dict is None:
+                raise DataError("reference: " + str(cal_dict))
+
+            ipo = []
+            # cal_dict: "{'xx': MyCsi}"
+
+            for key, value in cal_dict.items():
+
+                if not isinstance(value, MyCsi):
+                    raise DataError("reference csi: " + str(value) + "\nPlease input MyCsi instance.")
+
+                if value.csi is None:
+                    raise DataError("reference phase: " + str(value.csi))
+
+                ref_angle = eval(key)
+
+                ref_csi = value.csi
+                ref_diff = np.mean(ref_csi * ref_csi[:, :, reference_antenna][:, :, np.newaxis].conj(),
+                                   axis=(0, 1))
+                true_diff = np.exp([-1.j * 2 * np.pi * distance_antenna * antenna * center_freq * np.sin(
+                    ref_angle * torad) / lightspeed for antenna in range(nrx)]).reshape(-1, 1)
+
+                ipo.append(ref_diff.reshape(-1, 1) * true_diff.conj())
+
+            ipo = np.squeeze(np.mean(ipo, axis=0))
+
+            self.csi = self.csi * ipo[np.newaxis, np.newaxis, :, np.newaxis].conj()
+
+            print("Done")
+
+        except DataError as e:
+            print(e, "\nPlease load data")
+        except ArgError as e:
+            print(e, "\nPlease specify an integer from 0~2")
+
+    def remove_csd(self, HT=False):
+        """
+        Remove CSD based on values in 802.11 standard.\n
+        Requires 3 tx.\n
+        non-HT: -200ns, -100ns\n
+        HT: -400ns, -200ns\n
+        :param HT: Default is False
+        :return: CSI with CSD removed
+        """
+
+        print(self.name, "removing CSD...", end='')
+
+        try:
+            if self.csi is None:
+                raise DataError("csi: " + str(self.csi))
+
+            if self.configs.ntx != 3:
+                raise DataError(str(self.csi) + 'does not have multiple tx')
+            else:
+                if HT:
+                    csd_1 = np.exp(2.j * np.pi * self.configs.subfreq_list * (-400) * 1.e-9)
+                    csd_2 = np.exp(2.j * np.pi * self.configs.subfreq_list * (-200) * 1.e-9)
+                else:
+                    csd_1 = np.exp(2.j * np.pi * self.configs.subfreq_list * (-200) * 1.e-9)
+                    csd_2 = np.exp(2.j * np.pi * self.configs.subfreq_list * (-100) * 1.e-9)
+
+            self.csi[:, :, :, 1] = self.csi[:, :, :, 1] * csd_1
+            self.csi[:, :, :, 2] = self.csi[:, :, :, 2] * csd_2
+
+            print("Done")
+
+        except DataError as e:
+            print(e, "\nPlease load data")
+
+    def show_csd(self):
+        if self.configs.ntx != 3:
+            return
+        else:
+            csd_1 = self.csi[..., 0] * self.csi[..., 1].conj()
+            csd_2 = self.csi[..., 0] * self.csi[..., 2].conj()
+
+            csd_1 = np.unwrap(np.squeeze(np.angle(np.mean(csd_1, axis=0)))) / (2 * np.pi * self.configs.subfreq_list) * 1.e9
+            csd_2 = np.unwrap(np.squeeze(np.angle(np.mean(csd_2, axis=0)))) / (2 * np.pi * self.configs.subfreq_list) * 1.e9
+
+            plt.subplot(2, 1, 1)
+
+            for rx in range(self.configs.nrx):
+                plt.plot(csd_1[:, rx], label='rx'+str(rx))
+            plt.xlabel('Sub')
+            plt.ylabel('CSD/ns')
+            plt.title('CSD_1')
+            plt.legend()
+            plt.grid()
+
+            plt.subplot(2, 1, 2)
+            for rx in range(self.configs.nrx):
+                plt.plot(csd_2[:, rx], label='rx' + str(rx))
+            plt.xlabel('Sub')
+            plt.ylabel('CSD/ns')
+            plt.title('CSD_2')
+            plt.legend()
+            plt.grid()
+
+            plt.suptitle('CSD')
+            plt.tight_layout()
+            plt.show()
+
+    def extract_dynamic(self, mode='overall-multiply',
+                        ref='rx',
+                        ref_antenna=0,
+                        window_length=100,
+                        stride=100,
+                        subtract_mean=False,
+                        **kwargs):
+        """
+        Removes the static component from csi.\n
+        :param mode: 'overall' or 'running' (in terms of averaging) or 'highpass'. Default is 'overall'
+        :param ref: 'rx' or 'tx'
+        :param window_length: if mode is 'running', specify a window length for running mean. Default is 100
+        :param stride: if mode is 'running', specify a stride for running mean. Default is 100
+        :param ref_antenna: select one antenna with which to remove random phase offsets. Default is 0
+        :param subtract_mean: whether to subtract mean of cSI. Default is False
+        :return: dynamic component of csi
+        """
+        nrx = self.configs.nrx
+        nsub = self.configs.nsub
+        ntx = self.configs.ntx
+        dynamic = self.commonfunc.conjmul_dynamic
+        division = self.commonfunc.divison_dynamic
+        highpass = self.commonfunc.highpass
+
+        print(self.name, "apply dynamic component extraction: " + mode + " versus " + ref + str(ref_antenna) + "...", end='')
+
+        try:
+            if self.csi is None:
+                raise DataError("csi data")
+
+            if ref_antenna not in range(nrx):
+                raise ArgError("reference_antenna: " + str(ref_antenna) + "\nPlease specify an integer from 0~2")
+
+            if ref_antenna is None:
+                strengths = self.show_antenna_strength()
+                ref_antenna = np.argmax(strengths)
+
+            if mode == 'overall-multiply':
+                dynamic_csi = dynamic(self.csi, ref, ref_antenna, subtract_mean)
+
+            elif mode == 'overall-divide':
+                dynamic_csi = division(self.csi, ref, ref_antenna, subtract_mean)
+
+            elif mode == 'running-multiply':
+                dynamic_csi = np.zeros((self.length, nsub, nrx, ntx), dtype=complex)
+                for step in range((self.length - window_length) // stride):
+                    dynamic_csi[step * stride: step * stride + window_length] = dynamic(
+                        self.csi[step * stride: step * stride + window_length], ref, ref_antenna, subtract_mean)
+
+            elif mode == 'running-divide':
+                dynamic_csi = np.zeros((self.length, nsub, nrx, ntx), dtype=complex)
+                for step in range((self.length - window_length) // stride):
+                    dynamic_csi[step * stride: step * stride + window_length] = division(
+                        self.csi[step * stride: step * stride + window_length], ref, ref_antenna, subtract_mean)
+
+            elif mode == 'highpass':
+                b, a = highpass(**kwargs)
+                dynamic_csi = np.zeros_like(self.csi)
+                for sub in range(nsub):
+                    for rx in range(nrx):
+                        for tx in range(ntx):
+                            dynamic_csi[:, sub, rx, tx] = signal.filtfilt(b, a, self.csi[:, sub, rx, tx])
+
+            else:
+                raise ArgError("mode: " + str(mode) +
+                               "\nPlease specify mode=\"overall-multiply\", \"overall-divide\", \"running-divide\"or "
+                               "\"highpass\"")
+
+            self.csi = dynamic_csi
+            print("Done")
+
+        except DataError as e:
+            print(e, "\nPlease load data")
+        except ArgError as e:
+            print(e)
+
+    def resample_packets(self, sampling_rate=100):
+        """
+        Resample from raw CSI to reach a specified sampling rate.\n
+        Strongly recommended when uniform interval is required.\n
+        :param sampling_rate: sampling rate in Hz after resampling. Must be less than 3965.
+        Default is 100
+        :return: Resampled csi data
+        """
+        print(self.name, "resampling at " + str(sampling_rate) + "Hz...", end='')
+
+        try:
+            if self.csi is None:
+                raise DataError("csi data")
+
+            if not isinstance(sampling_rate, int) or sampling_rate >= self.actual_sr:
+                raise ArgError("sampling_rate: " + str(sampling_rate))
+
+            new_interval = 1. / sampling_rate
+
+            new_length = int(self.timestamps[-1] * sampling_rate) + 1  # Flooring
+            resample_indicies = []
+
+            for i in range(new_length):
+
+                index = np.searchsorted(self.timestamps, i * new_interval)
+
+                if index > 0 and (
+                        index == self.length or
+                        abs(self.timestamps[index] - i * new_interval) >
+                        abs(self.timestamps[index - 1] - i * new_interval)):
+                    index -= 1
+
+                resample_indicies.append(index)
+
+            self.csi = self.csi[resample_indicies]
+            self.timestamps = self.timestamps[resample_indicies]
+            self.length = new_length
+            self.actual_sr = sampling_rate
+
+            print("Done")
+
+        except DataError as e:
+            print(e, "\nPlease load data")
+        except ArgError as e:
+            print(e, "\nPlease specify an integer less than the current sampling rate")
+
