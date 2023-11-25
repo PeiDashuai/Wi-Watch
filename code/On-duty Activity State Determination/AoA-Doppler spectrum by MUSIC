@@ -25,7 +25,7 @@ function noise_space = noise_space(input_csi)
     noise_space = vector(:, 2:end);
 end
 
-function aoa_doppler_by_music(~,~,~,~,~,~)
+function aoa_doppler_by_music(input_csi,~,~,~,~,~)
 
         lightspeed = 299792458;
         center_freq = 5.88e9;
