@@ -1,33 +1,23 @@
-    function noise_space = noise_space(self, input_csi)
-        % Calculates self-correlation and eigen vectors of given csi.
-        % For AoA, input CSI of (nsub, nrx).
-        % For ToF and Doppler, input CSI of (nrx, nsub).
-        % :param input_csi: complex csi
-        % :return: noise space vectors
+function noise_space = noise_space(self, input_csi)
+    input_csi = squeeze(input_csi);
+    [vector, value] = eig(input_csi' * conj(input_csi));
+    [value, descend_order_index] = sort(diag(value), 'descend');
+    vector = vector(:, descend_order_index);
+     noise_space = vector(:, 2:end);
+end
 
-        input_csi = squeeze(input_csi);
-
-        [vector, value] = eig(input_csi' * conj(input_csi));
-        [value, descend_order_index] = sort(diag(value), 'descend');
-        vector = vector(:, descend_order_index);
-        noise_space = vector(:, 2:end);
-
+function dynamic = conjmul_dynamic(self, input_csi, ref, reference_antenna, subtract_mean)
+    if nargin < 5
+        subtract_mean = true;
     end
-
-    function dynamic = conjmul_dynamic(self, input_csi, ref, reference_antenna, subtract_mean)
-        if nargin < 5
-            subtract_mean = true;
-        end
-
-        if strcmp(ref, 'rx')
-            hc = input_csi .* conj(repmat(input_csi(:, :, reference_antenna, :), 1, 1, size(input_csi, 3), 1));
-        elseif strcmp(ref, 'tx')
-            hc = input_csi .* conj(repmat(input_csi(:, :, :, reference_antenna), 1, 1, 1, size(input_csi, 4)));
-        end
-
-        if subtract_mean
-            static = mean(hc, 1);
-            dynamic = hc - static;
-        else
-            dynamic = hc;
-        end
+    if strcmp(ref, 'rx')
+        hc = input_csi .* conj(repmat(input_csi(:, :, reference_antenna, :), 1, 1, size(input_csi, 3), 1));
+    elseif strcmp(ref, 'tx')
+        hc = input_csi .* conj(repmat(input_csi(:, :, :, reference_antenna), 1, 1, 1, size(input_csi, 4)));
+    end
+    if subtract_mean
+        static = mean(hc, 1);
+        dynamic = hc - static;
+    else
+        dynamic = hc;
+    end
